@@ -136,7 +136,7 @@ mock.module("@sinclair/typebox", () => ({
   },
 }));
 
-const { default: fffExtension } = await import("../src/index");
+const { default: fffExtension, FINDER_SLOT, FINDER_API_VERSION } = await import("../src/index");
 
 type EventHandler = (...args: any[]) => unknown;
 
@@ -992,5 +992,83 @@ describe("ffgrep per-file cap (#825)", () => {
     expect(captured.pageSize).toBe(20);
     expect(captured.maxMatchesPerFile).toBe(200);
     expect(captured.maxMatchesPerFile).toBeGreaterThan(captured.pageSize);
+  });
+});
+
+describe("the published finder slot", () => {
+  type Slot = {
+    apiVersion: number;
+    activeCwd: () => string;
+    route: (input: {
+      cwd: string;
+      path?: string;
+      pattern: string;
+      exclude?: string | string[];
+    }) => Promise<{ finder: MockFinder; query: string; root: string }>;
+  };
+
+  const slot = () => (globalThis as Record<symbol, unknown>)[FINDER_SLOT] as unknown as Slot;
+  const basePaths = () => createCalls.map((call: any) => call.basePath);
+
+  test("publishes the live instance's cwd and the version a reader checks", async () => {
+    const setup = await start("tools-and-ui", "/tmp/published-workspace");
+    expect(slot().apiVersion).toBe(FINDER_API_VERSION);
+    expect(slot().activeCwd()).toBe("/tmp/published-workspace");
+    // The slot is what another entry reads, so it has to be on the process global and not a module
+    // export alone: pi gives each entry its own jiti instance of this module.
+    expect((globalThis as Record<symbol, unknown>)[Symbol.for("pi-fff:finder")]).toBeDefined();
+    await shutdown(setup);
+  });
+
+  test("answers from the finder this extension already holds (no second index)", async () => {
+    const setup = await start("tools-and-ui", "/tmp/published-workspace");
+    const routed = await slot().route({ cwd: "/tmp/published-workspace", pattern: "needle" });
+    expect(routed.finder).toBe(finders[0]);
+    expect(routed.root).toBe("/tmp/published-workspace");
+    expect(routed.query).toBe("needle");
+    expect(basePaths()).toEqual(["/tmp/published-workspace"]);
+    await shutdown(setup);
+  });
+
+  test("a second root costs a pool entry, and does not destroy the session's index", async () => {
+    const setup = await start("tools-and-ui", "/tmp/published-workspace");
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fff-other-root-"));
+
+    const routed = await slot().route({ cwd: other, pattern: "needle" });
+
+    expect(routed.finder).not.toBe(finders[0]);
+    // The point of routing rather than calling `ensureFinder(other)`: the session's own finder — and
+    // its warm index — survives a question about somewhere else.
+    expect(finders[0].isDestroyed).toBe(false);
+    expect(basePaths()).toEqual(["/tmp/published-workspace", other]);
+    await shutdown(setup);
+  });
+
+  test("a path that leaves the cwd goes to the auxiliary pool, and one inside it does not", async () => {
+    const setup = await start("tools-and-ui", "/tmp/published-workspace");
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fff-outside-"));
+    fs.mkdirSync(path.join(outside, "src"));
+
+    const escaped = await slot().route({
+      cwd: "/tmp/published-workspace",
+      path: path.join(outside, "src"),
+      pattern: "needle",
+    });
+    expect(escaped.root).toBe(path.join(outside, "src"));
+    expect(escaped.finder).not.toBe(finders[0]);
+
+    const inside = await slot().route({
+      cwd: "/tmp/published-workspace",
+      path: "src/",
+      pattern: "TODO",
+      exclude: "*.md",
+    });
+    // A workspace-relative constraint is not a reroute: it becomes part of the query, built against
+    // the finder that already covers this cwd.
+    expect(inside.finder).toBe(finders[0]);
+    expect(inside.root).toBe("/tmp/published-workspace");
+    expect(inside.query).toBe("src/ !*.md TODO");
+
+    await shutdown(setup);
   });
 });

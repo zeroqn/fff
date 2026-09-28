@@ -199,6 +199,35 @@ The extension only reads these databases; it never records the agent's own searc
 
 No project files are uploaded anywhere by this extension. It runs locally and only uses the configured LLM through pi itself.
 
+## The engine slot
+
+Another pi extension in the same process can answer its own search from FFF's index instead of a
+subprocess, through a process-global slot this extension publishes at `session_start`:
+
+```ts
+const slot = globalThis[Symbol.for("pi-fff:finder")] as {
+  apiVersion: number;              // 1; refuse any other major
+  activeCwd: () => string;         // the root this instance indexes
+  route(input: {
+    cwd: string;                   // the session's cwd
+    path?: string;                 // the caller's path constraint, absolute or cwd-relative
+    pattern: string;               // the pattern, verbatim
+    exclude?: string | string[];
+  }): Promise<{ finder: FileFinderApi; query: string; root: string }>;
+};
+```
+
+`route` never rescans a root that is already indexed: the instance's own `cwd` answers from the finder
+it holds, and anything else — another session's cwd, or a `path` outside this one — goes through the
+same auxiliary pool the built-in tools use. The returned `query` is the FFF query for that question,
+built against the returned `root`: pass it to `finder.grep(query, …)` or `finder.glob(query, …)`.
+`finder.waitForIndexReady(timeoutMs)` bounds a cold index without blocking on it.
+
+The slot is a `Symbol.for` rendezvous rather than an import because pi loads each extension entry
+through its own jiti instance (`moduleCache: false`): an import would be a second module instance, a
+second index and a second watcher over the same tree. It is keyed by instance and **replaced** on every
+publish, so the live instance is always the one answering.
+
 ## Security
 
 - No shell execution

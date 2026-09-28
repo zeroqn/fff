@@ -37,6 +37,56 @@ import { buildQuery } from "./query";
 export { SCAN_TIMEOUT_MS } from "./sdk";
 
 // ---------------------------------------------------------------------------
+// The engine slot — what another extension reads to answer a cell's search
+// ---------------------------------------------------------------------------
+
+/**
+ * Where another entry in this process finds this extension's indexed finders.
+ *
+ * A `Symbol.for` rendezvous with a duplicated literal, never an import: pi loads every extension entry
+ * through its own jiti instance (`moduleCache: false`), so an import would be a second module instance,
+ * a second index and a second watcher over the same tree.
+ *
+ * Keyed by instance and *replacing*: pi re-imports an entry while `globalThis` survives, and the
+ * instance that just published is the live one.
+ */
+export const FINDER_SLOT = Symbol.for("pi-fff:finder");
+
+/** The slot's shape version. A reader refuses any other major. */
+export const FINDER_API_VERSION = 1;
+
+/** What the slot answers with: the finder covering a root, and the query for one question. */
+export interface FffRoute {
+  /** The finder that answered. It is this extension's, and it is already scanned or scanning. */
+  finder: FileFinderApi;
+  /** The FFF query for the question, constraints included, built against {@link FffRoute.root}. */
+  query: string;
+  /** The covering finder's indexed root: matched paths come back relative to this. */
+  root: string;
+}
+
+/** The published shape. */
+export interface FffFinderApi {
+  apiVersion: number;
+  /** The root this extension is indexing for the session it was started for. */
+  activeCwd: () => string;
+  /**
+   * The finder covering `cwd`, and the query for one question.
+   *
+   * This extension's own cwd answers from the finder it already holds. Any other root — another
+   * session's cwd, or a `path` that leaves this one — goes through the auxiliary pool, so a second root
+   * costs a pool entry rather than destroying and rescanning the session's index (which is what
+   * `ensureFinder` does when the cwd changes).
+   */
+  route: (input: {
+    cwd: string;
+    path?: string;
+    pattern: string;
+    exclude?: string | string[];
+  }) => Promise<FffRoute>;
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -467,6 +517,17 @@ export default function fffExtension(pi: ExtensionAPI) {
     });
   }
 
+  /** Publishes this instance's finder on the process-global slot (see `FINDER_SLOT`). */
+  function publishFinderSlot(): void {
+    const api: FffFinderApi = {
+      apiVersion: FINDER_API_VERSION,
+      // Live, not captured: a second session in this instance moves `activeCwd`.
+      activeCwd: () => activeCwd,
+      route: routeForEngine,
+    };
+    (globalThis as Record<symbol, unknown>)[FINDER_SLOT] = api;
+  }
+
   // The native layer refuses a picker rooted at $HOME / the fs root unless the
   // matching opt-in is set (crates/fff-core/src/file_picker.rs). Detect that here
   // so the opt-out reads as "search off" instead of an init failure (issue #857).
@@ -573,6 +634,42 @@ export default function fffExtension(pi: ExtensionAPI) {
     const suffix = [rebase, route.suffix].filter(Boolean).join("/");
     const query = buildQuery(suffix || undefined, pattern, exclude, aux.root);
     return { finder: aux.finder, query, root: aux.root };
+  }
+
+  /**
+   * The engine's one entry point.
+   *
+   * `resolveFinderForPath` answers a *path constraint* for this extension's own tools, which always
+   * search the cwd this instance is indexing; a cell engine also asks for the unconstrained case, and
+   * for a session whose cwd is not this instance's — so the covering finder is chosen here rather than
+   * inherited from `activeCwd`. A constraint that stays inside `cwd` is not a reroute: it is passed to
+   * `buildQuery` as a relative constraint against the covering finder, the same way the tools do it.
+   */
+  async function routeForEngine(input: {
+    cwd: string;
+    path?: string;
+    pattern: string;
+    exclude?: string | string[];
+  }): Promise<FffRoute> {
+    if (!auxPool) throw new Error("FFF auxiliary finder pool is not initialized");
+
+    const reroute = input.path ? routePathConstraint(input.path, input.cwd) : null;
+    const target = reroute ? reroute.root : input.cwd;
+    const covering =
+      !reroute && input.cwd === activeCwd
+        ? { finder: await ensureFinder(input.cwd), root: input.cwd }
+        : await auxPool.acquire(target);
+    // An entry in the pool may be rooted *above* the target it covers, so the constraint is rebased
+    // onto the finder that actually answers — the rebase `resolveFinderForPath` already does.
+    const rebase = nodePath.relative(covering.root, target).replaceAll(nodePath.sep, "/");
+    const relative = [rebase, reroute ? reroute.suffix : (input.path ?? "")]
+      .filter(Boolean)
+      .join("/");
+    return {
+      finder: covering.finder,
+      query: buildQuery(relative || undefined, input.pattern, input.exclude, covering.root),
+      root: covering.root,
+    };
   }
 
   async function getMentionItems(
@@ -793,6 +890,7 @@ export default function fffExtension(pi: ExtensionAPI) {
     }
 
     initializeFinderFactories();
+    publishFinderSlot();
 
     // `override` replaces pi's built-in grep/find. With the cwd opted out of
     // indexing that would leave the session without any working workspace
