@@ -89,4 +89,39 @@ describe("loadConfig", () => {
   function writeConfig(config: unknown): void {
     fs.writeFileSync(configPath, JSON.stringify(config));
   }
+
+  function writeExtensionConfig(name: string, contents: string): string {
+    const file = path.join(agentDir, "extension-configs", "pi-fff", name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, contents);
+    return file;
+  }
+
+  test("reads the extension-config tree, comments and trailing commas included", () => {
+    writeExtensionConfig(
+      "fff.jsonc",
+      `{
+  // the mode a code-mode host wants: the finder, no pi tool
+  "mode": "engine-only",
+  "followSymlinks": false,
+}`,
+    );
+
+    expect(loadConfig(agentDir)).toEqual({ mode: "engine-only", followSymlinks: false });
+  });
+
+  test("takes the name the convention implies, and prefers the tree over pi-fff.json", () => {
+    writeExtensionConfig("pi-fff.jsonc", '{ "mode": "tools-only" }');
+    writeConfig({ mode: "override" });
+
+    expect(loadConfig(agentDir)).toEqual({ mode: "tools-only" });
+  });
+
+  test("names the file it rejected, whichever location it came from", () => {
+    const file = writeExtensionConfig("fff.jsonc", '{"mode":');
+
+    expect(() => loadConfig(agentDir)).toThrow(
+      `Invalid pi-fff config at ${file}: not valid JSON`,
+    );
+  });
 });

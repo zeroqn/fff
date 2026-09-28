@@ -144,9 +144,13 @@ being activated — no name reaches the model, but the exact behaviour is `"mode
 
 ## Configuration
 
-For persistent global configuration, create `pi-fff.json` in pi's agent directory (`~/.pi/agent/pi-fff.json` by default; `PI_CODING_AGENT_DIR` is respected):
+For persistent global configuration, create the file in pi's extension-config tree —
+`~/.pi/agent/extension-configs/pi-fff/fff.jsonc` by default (`PI_CODING_AGENT_DIR` is respected). It is
+JSON with comments and trailing commas. Two other locations are read if that one is absent, in this
+order: `extension-configs/pi-fff/pi-fff.jsonc` (the name this convention implies, `<dir>/<dir>.jsonc`),
+then upstream's own `~/.pi/agent/pi-fff.json`. The first one that exists wins.
 
-```json
+```jsonc
 {
   "$schema": "https://raw.githubusercontent.com/dmtrKovalenko/fff/main/packages/pi-fff/pi-fff.schema.json",
   "mode": "override",
@@ -174,7 +178,7 @@ All fields are optional:
 
 Starting a session in a directory the config opts out of indexing (`$HOME` with `enableHomeDirScanning: false`, `/` with `enableFsRootScanning: false`) disables FFF workspace search for that session: the extension reports it once as a warning and keeps the `ffgrep`/`fffind` names even in `override` mode, so pi's built-in `grep`/`find` stay reachable.
 
-CLI flags take precedence over environment variables, which take precedence over this file. A missing file is ignored. Malformed JSON, unknown fields, and invalid values stop the extension from loading and report the file path and error. `/fff-mode` changes the current session; it does not edit this file.
+CLI flags take precedence over environment variables, which take precedence over the file. No file at any of the three locations is ignored. Malformed content, unknown fields and invalid values stop the extension from loading and report the path that was read. `/fff-mode` changes the current session; it does not edit this file.
 
 The file is global only. Project-level config cannot safely control tool names because pi decides which tools an extension registers before project configuration can be trusted.
 

@@ -1,8 +1,28 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { piDataDir } from "./paths";
 
+/** This extension's own file, in pi's agent directory. Still read, as the last resort. */
 export const CONFIG_FILE_NAME = "pi-fff.json";
+/** pi's native extension-config tree: `<agentDir>/extension-configs/<dir>/<file>.jsonc`. */
+export const EXTENSION_CONFIG_DIR = "pi-fff";
+export const EXTENSION_CONFIG_FILE = "fff.jsonc";
+/** The name that convention implies, taken as well: every other pi-native extension is `<dir>/<dir>.jsonc`. */
+export const EXTENSION_CONFIG_FILE_ALT = "pi-fff.jsonc";
+
+/**
+ * The config files this extension reads, in order; the first one that exists wins.
+ *
+ * The extension-config tree first, because that is where a pi-native extension's knobs live in the
+ * workspace this fork serves; `pi-fff.json` last, so an upstream user's existing file keeps working.
+ */
+export function configPaths(agentDir: string = piDataDir()): string[] {
+  return [
+    join(agentDir, "extension-configs", EXTENSION_CONFIG_DIR, EXTENSION_CONFIG_FILE),
+    join(agentDir, "extension-configs", EXTENSION_CONFIG_DIR, EXTENSION_CONFIG_FILE_ALT),
+    join(agentDir, CONFIG_FILE_NAME),
+  ];
+}
 export const VALID_MODES = ["tools-and-ui", "tools-only", "override", "engine-only"] as const;
 
 export type FffMode = (typeof VALID_MODES)[number];
@@ -30,7 +50,9 @@ const CONFIG_KEYS = new Set<keyof FffConfig>([
 ]);
 
 export function loadConfig(agentDir = piDataDir()): FffConfig {
-  const configPath = join(agentDir, CONFIG_FILE_NAME);
+  const configPath = configPaths(agentDir).find((candidate) => existsSync(candidate));
+  if (!configPath) return {};
+
   let contents: string;
 
   try {
@@ -44,7 +66,9 @@ export function loadConfig(agentDir = piDataDir()): FffConfig {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(contents);
+    // A `.jsonc` file may carry comments and trailing commas; a strict JSON file is valid input to the
+    // same reader, so one parse path serves every location.
+    parsed = JSON.parse(stripJsonc(contents));
   } catch (error: unknown) {
     throw invalidConfig(configPath, `not valid JSON (${errorMessage(error)})`);
   }
@@ -110,4 +134,67 @@ function validateBoolean(
   if (value !== undefined && typeof value !== "boolean") {
     throw invalidConfig(configPath, `"${key}" must be a boolean`);
   }
+}
+
+/**
+ * JSON with comments and trailing commas → JSON. String-aware, so `//` and `,}` inside a string survive.
+ */
+export function stripJsonc(text: string): string {
+  let out = "";
+  let inString = false;
+  let pendingComma = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] as string;
+
+    if (inString) {
+      out += ch;
+      if (ch === "\\") {
+        out += text[i + 1] ?? "";
+        i++;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (pendingComma) {
+      if (ch === "}" || ch === "]") {
+        pendingComma = false;
+        out += ch;
+        continue;
+      }
+      if (/\s/.test(ch)) continue;
+      out += ",";
+      pendingComma = false;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      continue;
+    }
+
+    if (ch === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+      out += "\n";
+      continue;
+    }
+
+    if (ch === "/" && text[i + 1] === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+      i++;
+      continue;
+    }
+
+    if (ch === ",") {
+      pendingComma = true;
+      continue;
+    }
+
+    out += ch;
+  }
+
+  return out;
 }
