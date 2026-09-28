@@ -400,7 +400,26 @@ export default function fffExtension(pi: ExtensionAPI) {
       : undefined;
   }
 
+  /** The mode as it is readable *before* pi populates flag values: flag, env, config file, default. */
+  function loadTimeMode(): FffMode {
+    const flag = parseMode(pi.getFlag("fff-mode"));
+    if (flag !== undefined) return flag;
+    return parseMode(process.env.PI_FFF_MODE) ?? config.mode ?? "tools-and-ui";
+  }
+
   let currentMode: FffMode = "tools-and-ui";
+  /**
+   * Whether this instance registers any pi tool at all.
+   *
+   * `engine-only` is decided **here**, at factory time, because this is where the registrations happen
+   * and pi activates every newly registered tool — the one thing the mode exists to avoid. A CLI
+   * `--fff-mode=engine-only` cannot be honoured here (pi populates flag values after loading
+   * extensions), so the mode is read from the flag, the environment and the config *file* in that
+   * order; the CLI-flag case is handled at `session_start` instead, where the names exist in the
+   * registry but are never activated — see `registerPendingTools`. Configure `engine-only` in
+   * `pi-fff.json` or `PI_FFF_MODE` for the exact behaviour.
+   */
+  let registerTools = loadTimeMode() !== "engine-only";
   let toolNames = resolveToolNames(currentMode);
   let resolvedDbPaths: ReturnType<typeof resolveDbPaths>;
   let enableFsRootScanning = false;
@@ -793,6 +812,10 @@ export default function fffExtension(pi: ExtensionAPI) {
     resolveName: () => string,
     definition: PendingToolDefinition<TParams, TDetails, TState>,
   ): void {
+    // `engine-only` registers nothing: the finder, the engine slot and the `@`-mention provider are the
+    // whole extension, and there is no name for the model to choose between.
+    if (!registerTools) return;
+
     pendingTools.push(() => registerTool(resolveName, definition));
 
     // Pi restores historical tool rows before session_start. Register the
@@ -807,7 +830,13 @@ export default function fffExtension(pi: ExtensionAPI) {
   function registerPendingTools(staleNames: readonly string[]): void {
     if (toolsRegistered) return;
 
-    const registeredNames = new Set(pendingTools.map((register) => register()));
+    // In `engine-only` nothing this instance registered is activated: either nothing was registered
+    // (the mode was readable at factory time) or the names are inert in the registry (a CLI flag, which
+    // pi does not expose until after loading). `staleNames` still prunes what a previous mode left.
+    const registeredNames =
+      currentMode === "engine-only"
+        ? new Set<string>()
+        : new Set(pendingTools.map((register) => register()));
     const stale = new Set(staleNames.filter((name) => !registeredNames.has(name)));
     pi.setActiveTools([
       ...new Set([
@@ -821,7 +850,7 @@ export default function fffExtension(pi: ExtensionAPI) {
   // --- Flags / lifecycle ---
 
   pi.registerFlag("fff-mode", {
-    description: "FFF mode: tools-and-ui | tools-only | override",
+    description: "FFF mode: tools-and-ui | tools-only | override | engine-only",
     type: "string",
   });
 
@@ -1501,7 +1530,8 @@ export default function fffExtension(pi: ExtensionAPI) {
   // --- commands ---
 
   pi.registerCommand("fff-mode", {
-    description: "Show or set FFF mode: /fff-mode [tools-and-ui | tools-only | override]",
+    description:
+      "Show or set FFF mode: /fff-mode [tools-and-ui | tools-only | override | engine-only]",
     handler: async (args, ctx) => {
       if (!toolsRegistered) {
         try {
@@ -1532,7 +1562,14 @@ export default function fffExtension(pi: ExtensionAPI) {
       const oldMode = getMode();
       pi.appendEntry("fff-mode", { mode: newMode });
 
-      if ((oldMode === "override") !== (newMode === "override")) {
+      // Two switches change *registration* rather than which names are active: `override` collides with
+      // pi's built-ins, and `engine-only` registers nothing at all. Neither can be undone by this
+      // command — nothing here unregisters a name — so both wait for the reload that re-imports this
+      // entry.
+      const changesRegistration =
+        (oldMode === "override") !== (newMode === "override") ||
+        (oldMode === "engine-only") !== (newMode === "engine-only");
+      if (changesRegistration) {
         ctx.ui.notify(
           `Mode '${newMode}' saved. Run /reload to apply the tool name change.`,
           "info",

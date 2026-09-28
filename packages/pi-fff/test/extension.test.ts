@@ -1072,3 +1072,52 @@ describe("the published finder slot", () => {
     await shutdown(setup);
   });
 });
+
+describe("engine-only mode", () => {
+  type Slot = { apiVersion: number; activeCwd: () => string };
+  const slot = () => (globalThis as Record<symbol, unknown>)[FINDER_SLOT] as unknown as Slot;
+  const lastActive = (setup: { pi: { setActiveTools: ReturnType<typeof mock> } }) =>
+    setup.pi.setActiveTools.mock.calls.at(-1)?.[0];
+
+  function writeConfig(mode: string) {
+    fs.writeFileSync(configPath, JSON.stringify({ mode }));
+  }
+
+  test("registers no pi tool at all when the config file selects it", async () => {
+    writeConfig("engine-only");
+
+    const setup = await start();
+
+    // Nothing in the registry, which is stronger than nothing active: a registered name is one
+    // `/reload` away from the model's surface.
+    expect(setup.pi.registerTool.mock.calls.length).toBe(0);
+    expect(lastActive(setup)).toEqual(["read"]);
+    // What the mode is for: the finder is still published, and `@` completions still work.
+    expect(slot().apiVersion).toBe(FINDER_API_VERSION);
+    expect(setup.ctx.ui.addAutocompleteProvider).toHaveBeenCalled();
+    await shutdown(setup);
+  });
+
+  test("keeps the CLI-flag case to registered-but-never-active", async () => {
+    // pi does not expose flag values until after an entry is loaded, so a `--fff-mode=engine-only`
+    // cannot stop the registrations; it can only stop the activation.
+    const setup = await start("engine-only");
+
+    expect(setup.pi.registerTool.mock.calls.length).toBeGreaterThan(0);
+    expect(lastActive(setup)).toEqual(["read"]);
+    expect(slot().apiVersion).toBe(FINDER_API_VERSION);
+    await shutdown(setup);
+  });
+
+  test("a switch *to* engine-only waits for the /reload that re-imports the entry", async () => {
+    const setup = await start("tools-and-ui");
+
+    await setup.commands.get("fff-mode").handler("engine-only", setup.ctx);
+
+    expect(setup.ctx.ui.notify).toHaveBeenCalledWith(
+      "Mode 'engine-only' saved. Run /reload to apply the tool name change.",
+      "info",
+    );
+    await shutdown(setup);
+  });
+});

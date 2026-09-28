@@ -13,9 +13,9 @@
     },
     "mode": {
       "type": "string",
-      "enum": ["tools-and-ui", "tools-only", "override"],
+      "enum": ["tools-and-ui", "tools-only", "override", "engine-only"],
       "default": "tools-and-ui",
-      "description": "Controls which FFF tools and autocomplete integrations are enabled."
+      "description": "Controls which FFF tools and autocomplete integrations are enabled. engine-only registers no pi tool at all: the extension publishes its finder for another extension's search and keeps the @ autocomplete."
     },
     "frecencyDbPath": {
       "type": "string",

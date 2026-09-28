@@ -123,6 +123,10 @@ Parameters:
 - `tools-and-ui` (default): registers `fffind`, `ffgrep`, `fff-multi-grep` as additional tools + FFF-backed `@` autocomplete
 - `tools-only`: additional tools only; keep pi's default `@` autocomplete
 - `override`: replaces pi's built-in `find`, `grep` and adds `multi_grep` + FFF-backed `@` autocomplete
+- `engine-only`: registers **no pi tool at all**. The extension is the finder it publishes for another
+  extension's search (see [The engine slot](#the-engine-slot)) and FFF-backed `@` autocomplete, which is
+  what a code-mode session wants: the model's tool surface stays the one tool that host owns, and FFF
+  still answers the searches inside it
 
 Startup mode precedence:
 1. `--fff-mode <mode>` CLI flag
@@ -130,7 +134,13 @@ Startup mode precedence:
 3. `mode` in the global config file
 4. default (`tools-and-ui`)
 
-When a session resumes, its most recent `/fff-mode` selection takes precedence over the startup resolution above. Switching to or from `override` takes effect after `/reload`, when the tools are registered again.
+When a session resumes, its most recent `/fff-mode` selection takes precedence over the startup resolution above. Switching to or from `override` — and to or from `engine-only` — takes effect after `/reload`, when the tools are registered again.
+
+`engine-only` reads the CLI flag, the environment and the config file in the usual order, but only the
+last two decide it at load: pi does not expose flag values until after an entry has been loaded, so
+`--fff-mode=engine-only` cannot prevent the registrations. That case lands in the registry without ever
+being activated — no name reaches the model, but the exact behaviour is `"mode": "engine-only"` or
+`PI_FFF_MODE=engine-only`.
 
 ## Configuration
 
@@ -154,7 +164,7 @@ All fields are optional:
 | Field | Type | Default |
 |---|---|---|
 | `$schema` | non-empty string | none |
-| `mode` | `tools-and-ui`, `tools-only`, or `override` | `tools-and-ui` |
+| `mode` | `tools-and-ui`, `tools-only`, `override`, or `engine-only` | `tools-and-ui` |
 | `frecencyDbPath` | non-empty string | See [Data](#data) |
 | `historyDbPath` | non-empty string | See [Data](#data) |
 | `enableFsRootScanning` | boolean | `false` |
